@@ -148,41 +148,41 @@ def collect_opinions(state: WorkflowState):
         
         # Simplified debate process for faster execution
         num_rounds = 3  # Reduced from 5
-        round_opinions = {n: {} for n in range(1, num_rounds+1)}
+        round_opinions = {str(n): {} for n in range(1, num_rounds+1)}
         
         # Round 1: Initial Opinions
         update_progress(session_id, 40.0, "专家们正在进行第一轮意见收集...")
         for role, agent in agent_dict.items():
             try:
                 opinion = agent.chat(f'根据医疗问题，请给出您的专业意见和初步诊断。\n\n问题: {question}\n\n请用中文回答，格式如下：\n\n诊断意见：')
-                round_opinions[1][role] = opinion
+                round_opinions["1"][role] = opinion
             except Exception as e:
                 logger.error(f"Error getting opinion from {role}: {str(e)}")
-                round_opinions[1][role] = f"专家 {role} 暂时无法提供意见"
+                round_opinions["1"][role] = f"专家 {role} 暂时无法提供意见"
         
         # Round 2: Discussion
         update_progress(session_id, 60.0, "专家们正在进行第二轮讨论...")
-        if len(round_opinions[1]) > 0:
-            assessment = "\n".join(f"{k}: {v}" for k, v in round_opinions[1].items())
+        if len(round_opinions["1"]) > 0:
+            assessment = "\n".join(f"{k}: {v}" for k, v in round_opinions["1"].items())
             for role, agent in agent_dict.items():
                 try:
                     opinion = agent.chat(f'请基于其他专家的意见，提供您的进一步分析和建议。\n\n其他专家意见：\n{assessment}\n\n请用中文回答：')
-                    round_opinions[2][role] = opinion
+                    round_opinions["2"][role] = opinion
                 except Exception as e:
                     logger.error(f"Error in round 2 for {role}: {str(e)}")
-                    round_opinions[2][role] = f"专家 {role} 在第二轮讨论中无法提供意见"
+                    round_opinions["2"][role] = f"专家 {role} 在第二轮讨论中无法提供意见"
         
         # Round 3: Final discussion
         update_progress(session_id, 70.0, "专家们正在进行最终讨论...")
-        if len(round_opinions[2]) > 0:
-            assessment = "\n".join(f"{k}: {v}" for k, v in round_opinions[2].items())
+        if len(round_opinions["2"]) > 0:
+            assessment = "\n".join(f"{k}: {v}" for k, v in round_opinions["2"].items())
             for role, agent in agent_dict.items():
                 try:
                     opinion = agent.chat(f'基于前两轮讨论，请提供您的最终分析意见。\n\n讨论总结：\n{assessment}\n\n请用中文回答：')
-                    round_opinions[3][role] = opinion
+                    round_opinions["3"][role] = opinion
                 except Exception as e:
                     logger.error(f"Error in round 3 for {role}: {str(e)}")
-                    round_opinions[3][role] = f"专家 {role} 在最终讨论中无法提供意见"
+                    round_opinions["3"][role] = f"专家 {role} 在最终讨论中无法提供意见"
         
         return {"round_opinions": round_opinions}
     except Exception as e:
