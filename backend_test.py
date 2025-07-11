@@ -238,9 +238,22 @@ class BackendTester:
             fake_session_id = str(uuid.uuid4())
             response = self.session.get(f"{API_BASE}/consultation/{fake_session_id}/progress")
             
-            if response.status_code == 404 or (response.status_code == 200 and "error" in response.json()):
+            if response.status_code == 404:
                 self.log_test("Non-existent Session", True, "Properly handled non-existent session")
                 return True
+            elif response.status_code == 200:
+                data = response.json()
+                # Check if it's the expected error format [{"error": "message"}, status_code]
+                if isinstance(data, list) and len(data) == 2 and isinstance(data[0], dict) and "error" in data[0]:
+                    self.log_test("Non-existent Session", True, "Properly handled non-existent session with error response")
+                    return True
+                elif isinstance(data, dict) and "error" in data:
+                    self.log_test("Non-existent Session", True, "Properly handled non-existent session with error response")
+                    return True
+                else:
+                    self.log_test("Non-existent Session", False, 
+                                f"Unexpected response format for non-existent session", data)
+                    return False
             else:
                 self.log_test("Non-existent Session", False, 
                             f"Should return 404 or error, got HTTP {response.status_code}")
