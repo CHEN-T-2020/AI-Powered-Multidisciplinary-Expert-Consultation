@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Textarea } from './ui/textarea';
@@ -6,8 +6,11 @@ import { Badge } from './ui/badge';
 import { Separator } from './ui/separator';
 import { Progress } from './ui/progress';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from './ui/accordion';
-import { Clock, Users, MessageSquare, CheckCircle, AlertCircle } from 'lucide-react';
-import { mockConsultationData } from '../data/mockData';
+import { Clock, Users, MessageSquare, CheckCircle, AlertCircle, XCircle } from 'lucide-react';
+import axios from 'axios';
+
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const API = `${BACKEND_URL}/api`;
 
 const MedicalConsultation = () => {
   const [question, setQuestion] = useState('');
@@ -15,18 +18,9 @@ const MedicalConsultation = () => {
   const [consultationResult, setConsultationResult] = useState(null);
   const [progress, setProgress] = useState(0);
   const [currentStep, setCurrentStep] = useState('');
-
-  const consultationSteps = [
-    '收到问题，正在为您组建AI专家团队...',
-    '专家团队组建完毕，正在进行意见征集...',
-    '专家们正在进行第一轮讨论...',
-    '专家们正在进行第二轮讨论...',
-    '专家们正在进行第三轮讨论...',
-    '专家们正在进行多轮深入讨论...',
-    '讨论结束，正在汇总各专家最终意见...',
-    '正在生成最终会诊结论...',
-    '会诊完成！'
-  ];
+  const [sessionId, setSessionId] = useState(null);
+  const [error, setError] = useState(null);
+  const eventSourceRef = useRef(null);
 
   const exampleQuestions = [
     "3岁男孩反复咳嗽2个月，夜间加重，运动后气促，既往有湿疹史，请问可能的诊断是什么？",
@@ -34,45 +28,105 @@ const MedicalConsultation = () => {
     "8岁女孩身高明显低于同龄人，骨龄延迟，甲状腺功能检查异常，请分析可能的内分泌疾病？"
   ];
 
-  const simulateConsultation = async () => {
-    setIsConsulting(true);
-    setProgress(0);
-    setConsultationResult(null);
+  const startConsultation = async () => {
+    if (!question.trim()) return;
+    
+    try {
+      setIsConsulting(true);
+      setError(null);
+      setProgress(0);
+      setCurrentStep('正在启动会诊...');
+      setConsultationResult(null);
 
-    // 模拟会诊进度
-    for (let i = 0; i < consultationSteps.length; i++) {
-      setCurrentStep(consultationSteps[i]);
-      setProgress((i + 1) / consultationSteps.length * 100);
-      
-      // 模拟不同步骤的时间延迟
-      const delay = i === 0 ? 800 : 
-                   i === 1 ? 1200 : 
-                   i >= 2 && i <= 5 ? 1500 : 
-                   i === 6 ? 1000 : 
-                   i === 7 ? 800 : 500;
-      
-      await new Promise(resolve => setTimeout(resolve, delay));
+      // Start consultation
+      const response = await axios.post(`${API}/consultation/start`, {
+        question: question.trim(),
+        model: "gpt-4o-mini"
+      });
+
+      const newSessionId = response.data.session_id;
+      setSessionId(newSessionId);
+
+      // Start listening to progress updates
+      startProgressStream(newSessionId);
+
+    } catch (err) {
+      console.error('Error starting consultation:', err);
+      setError('启动会诊失败: ' + (err.response?.data?.error || err.message));
+      setIsConsulting(false);
+    }
+  };
+
+  const startProgressStream = (sessionId) => {
+    // Close existing connection if any
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
     }
 
-    // 模拟完成会诊
-    setTimeout(() => {
-      setConsultationResult(mockConsultationData);
-      setIsConsulting(false);
-    }, 500);
+    // Create new EventSource for progress updates
+    const progressInterval = setInterval(async () => {
+      try {
+        const response = await axios.get(`${API}/consultation/${sessionId}/progress`);
+        const data = response.data;
+        
+        setProgress(data.progress || 0);
+        setCurrentStep(data.current_step || '');
+        
+        if (data.status === 'completed' && data.result) {
+          setConsultationResult(data.result);
+          setIsConsulting(false);
+          clearInterval(progressInterval);
+        } else if (data.status === 'error') {
+          setError(data.result?.error || '会诊过程中发生错误');
+          setIsConsulting(false);
+          clearInterval(progressInterval);
+        }
+      } catch (err) {
+        console.error('Error getting progress:', err);
+        setError('获取进度失败: ' + (err.response?.data?.error || err.message));
+        setIsConsulting(false);
+        clearInterval(progressInterval);
+      }
+    }, 2000); // Poll every 2 seconds
+
+    // Store interval reference for cleanup
+    eventSourceRef.current = { close: () => clearInterval(progressInterval) };
   };
 
   const handleSubmit = () => {
-    if (!question.trim()) return;
-    simulateConsultation();
+    startConsultation();
   };
 
   const handleExampleClick = (exampleQuestion) => {
     setQuestion(exampleQuestion);
   };
 
-  const formatTime = (seconds) => {
-    return `${Math.floor(seconds / 60)}分${seconds % 60}秒`;
+  const handleReset = () => {
+    setQuestion('');
+    setConsultationResult(null);
+    setProgress(0);
+    setCurrentStep('');
+    setError(null);
+    setSessionId(null);
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+    }
   };
+
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}分${secs}秒`;
+  };
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+      }
+    };
+  }, []);
 
   return (
     <div className="max-w-6xl mx-auto p-6 space-y-8">
@@ -85,6 +139,18 @@ const MedicalConsultation = () => {
           专业的AI医疗专家团队为您提供全面、可信赖的医疗咨询服务
         </p>
       </div>
+
+      {/* 错误提示 */}
+      {error && (
+        <Card className="border-red-200 bg-red-50">
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-2 text-red-600">
+              <XCircle className="h-5 w-5" />
+              <p>{error}</p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* 问题输入模块 */}
       {!isConsulting && !consultationResult && (
@@ -183,122 +249,123 @@ const MedicalConsultation = () => {
               <div className="flex items-center justify-between text-sm text-muted-foreground bg-white rounded-lg p-4">
                 <div className="flex items-center gap-2">
                   <Clock className="h-4 w-4" />
-                  <span>总耗时：{formatTime(consultationResult.totalTime)}</span>
+                  <span>总耗时：{formatTime(consultationResult.duration || 0)}</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <Users className="h-4 w-4" />
-                  <span>参与专家：{consultationResult.experts.length}位</span>
+                  <span>参与专家：{consultationResult.experts?.length || 0}位</span>
                 </div>
               </div>
               
               <div className="bg-gray-50 rounded-lg p-4">
                 <p className="text-sm font-medium mb-2">您的问题：</p>
-                <p className="text-sm text-muted-foreground">{question}</p>
+                <p className="text-sm text-muted-foreground">{consultationResult.question}</p>
               </div>
             </CardContent>
           </Card>
 
           {/* 专家团队卡片 */}
-          <Card className="shadow-lg">
-            <CardHeader>
-              <CardTitle className="text-xl flex items-center gap-2">
-                <Users className="text-blue-600" />
-                本次会诊专家团队
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {consultationResult.experts.map((expert, index) => (
-                  <div key={index} className="bg-gradient-to-br from-blue-50 to-purple-50 rounded-lg p-4 border border-blue-200">
-                    <div className="flex items-start gap-3">
-                      <div className="w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center text-white font-bold text-sm">
-                        {index + 1}
-                      </div>
-                      <div className="flex-1">
-                        <h4 className="font-semibold text-base">{expert.role}</h4>
-                        <p className="text-sm text-muted-foreground mt-1">{expert.description}</p>
-                        {expert.hierarchy && (
-                          <Badge variant="outline" className="mt-2 text-xs">
-                            {expert.hierarchy}
-                          </Badge>
-                        )}
+          {consultationResult.experts && consultationResult.experts.length > 0 && (
+            <Card className="shadow-lg">
+              <CardHeader>
+                <CardTitle className="text-xl flex items-center gap-2">
+                  <Users className="text-blue-600" />
+                  本次会诊专家团队
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {consultationResult.experts.map((expert, index) => (
+                    <div key={index} className="bg-gradient-to-br from-blue-50 to-purple-50 rounded-lg p-4 border border-blue-200">
+                      <div className="flex items-start gap-3">
+                        <div className="w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center text-white font-bold text-sm">
+                          {index + 1}
+                        </div>
+                        <div className="flex-1">
+                          <h4 className="font-semibold text-base">{expert.role}</h4>
+                          <p className="text-sm text-muted-foreground mt-1">{expert.description}</p>
+                          {expert.hierarchy && (
+                            <Badge variant="outline" className="mt-2 text-xs">
+                              {expert.hierarchy}
+                            </Badge>
+                          )}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
           {/* 各专家最终意见卡片 */}
-          <Card className="shadow-lg">
-            <CardHeader>
-              <CardTitle className="text-xl">各专家独立意见</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                {Object.entries(consultationResult.finalAnswers).map(([role, opinion], index) => (
-                  <div key={index} className="border rounded-lg p-4 hover:bg-gray-50 transition-colors">
-                    <div className="flex items-start gap-3">
-                      <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full flex items-center justify-center text-white font-medium text-sm">
-                        {index + 1}
-                      </div>
-                      <div className="flex-1">
-                        <h4 className="font-semibold text-base text-blue-600 mb-2">{role}：</h4>
-                        <p className="text-sm text-gray-700 leading-relaxed">{opinion}</p>
+          {consultationResult.final_answers && Object.keys(consultationResult.final_answers).length > 0 && (
+            <Card className="shadow-lg">
+              <CardHeader>
+                <CardTitle className="text-xl">各专家独立意见</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  {Object.entries(consultationResult.final_answers).map(([role, opinion], index) => (
+                    <div key={index} className="border rounded-lg p-4 hover:bg-gray-50 transition-colors">
+                      <div className="flex items-start gap-3">
+                        <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full flex items-center justify-center text-white font-medium text-sm">
+                          {index + 1}
+                        </div>
+                        <div className="flex-1">
+                          <h4 className="font-semibold text-base text-blue-600 mb-2">{role}：</h4>
+                          <p className="text-sm text-gray-700 leading-relaxed">{opinion}</p>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
           {/* 完整会诊记录 */}
-          <Card className="shadow-lg">
-            <CardHeader>
-              <CardTitle className="text-xl">完整会诊记录（面向研究人员）</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Accordion type="single" collapsible className="w-full">
-                <AccordionItem value="detailed-records">
-                  <AccordionTrigger className="text-left">
-                    <div className="flex items-center gap-2">
-                      <MessageSquare className="h-4 w-4" />
-                      查看多轮讨论详细记录
-                    </div>
-                  </AccordionTrigger>
-                  <AccordionContent>
-                    <div className="space-y-6 mt-4">
-                      {Object.entries(consultationResult.roundOpinions).map(([round, opinions]) => (
-                        <div key={round} className="border rounded-lg p-4 bg-gray-50">
-                          <h4 className="font-semibold mb-3 text-blue-600">第{round}轮讨论</h4>
-                          <div className="space-y-3">
-                            {Object.entries(opinions).map(([expert, opinion]) => (
-                              <div key={expert} className="bg-white rounded p-3 border-l-4 border-blue-200">
-                                <p className="font-medium text-sm text-blue-600 mb-1">{expert}：</p>
-                                <p className="text-xs text-gray-600">{opinion}</p>
-                              </div>
-                            ))}
+          {consultationResult.round_opinions && Object.keys(consultationResult.round_opinions).length > 0 && (
+            <Card className="shadow-lg">
+              <CardHeader>
+                <CardTitle className="text-xl">完整会诊记录（面向研究人员）</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <Accordion type="single" collapsible className="w-full">
+                  <AccordionItem value="detailed-records">
+                    <AccordionTrigger className="text-left">
+                      <div className="flex items-center gap-2">
+                        <MessageSquare className="h-4 w-4" />
+                        查看多轮讨论详细记录
+                      </div>
+                    </AccordionTrigger>
+                    <AccordionContent>
+                      <div className="space-y-6 mt-4">
+                        {Object.entries(consultationResult.round_opinions).map(([round, opinions]) => (
+                          <div key={round} className="border rounded-lg p-4 bg-gray-50">
+                            <h4 className="font-semibold mb-3 text-blue-600">第{round}轮讨论</h4>
+                            <div className="space-y-3">
+                              {Object.entries(opinions).map(([expert, opinion]) => (
+                                <div key={expert} className="bg-white rounded p-3 border-l-4 border-blue-200">
+                                  <p className="font-medium text-sm text-blue-600 mb-1">{expert}：</p>
+                                  <p className="text-xs text-gray-600">{opinion}</p>
+                                </div>
+                              ))}
+                            </div>
                           </div>
-                        </div>
-                      ))}
-                    </div>
-                  </AccordionContent>
-                </AccordionItem>
-              </Accordion>
-            </CardContent>
-          </Card>
+                        ))}
+                      </div>
+                    </AccordionContent>
+                  </AccordionItem>
+                </Accordion>
+              </CardContent>
+            </Card>
+          )}
 
           {/* 重新开始按钮 */}
           <div className="flex justify-center">
             <Button 
-              onClick={() => {
-                setQuestion('');
-                setConsultationResult(null);
-                setProgress(0);
-                setCurrentStep('');
-              }}
+              onClick={handleReset}
               variant="outline"
               className="px-8 py-3 text-base hover:bg-blue-50 border-blue-200"
             >
